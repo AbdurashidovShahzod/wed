@@ -879,6 +879,24 @@
             .hero-day-container { flex-direction: column; gap: 20px; }
         }
 
+        /* Mobile / performance optimizations */
+        @media (max-width: 768px) {
+            /* Reduce heavy blur on mobile */
+            .flower { filter: blur(12px); }
+            .flower1, .flower2, .flower3, .flower4 {
+                width: calc(50vw); height: calc(50vw);
+            }
+            .petal { width: 10px; height: 10px; }
+        }
+
+        /* Respect user preference for reduced motion */
+        @media (prefers-reduced-motion: reduce) {
+            .flower, .petal, .hero-names h1, .leaf-wreath span, .couple-img, .date-divider {
+                animation: none !important;
+                transition: none !important;
+            }
+        }
+
         @keyframes fadeInUp {
             from {
                 opacity: 0;
@@ -1065,35 +1083,44 @@
         <div style="margin-top: 30px; font-size: 2rem;">💐 💕 💐</div>
     </footer>
 
-    <!-- Single audio element: preload + loop + playsinline (no autoplay/muted attributes) -->
-    <audio id="bgMusic" preload="auto" loop playsinline webkit-playsinline>
+    <!-- Single audio element: preload reduced to metadata to avoid heavy downloads on page open -->
+    <audio id="bgMusic" preload="metadata" loop playsinline webkit-playsinline>
         <source src="https://file.muznavo.net/mp3/izzat-shukurov-vafodori.mp3" type="audio/mpeg">
         Your browser does not support the audio element.
     </audio>
     
     <script>
-        // Create Falling Petals
+        // Create Falling Petals (deferred & adaptive count for mobile)
         const petalsContainer = document.getElementById('petalsContainer');
-        for (let i = 0; i < 30; i++) {
-            const petal = document.createElement('div');
-            petal.className = 'petal';
-            petal.style.left = Math.random() * 100 + '%';
-            petal.style.animationDelay = Math.random() * 12 + 's';
-            petal.style.animationDuration = (Math.random() * 8 + 10) + 's';
-            petalsContainer.appendChild(petal);
+        function createPetals() {
+            const isMobile = window.innerWidth <= 768;
+            const count = isMobile ? 8 : 30; // fewer petals on mobile
+            for (let i = 0; i < count; i++) {
+                const petal = document.createElement('div');
+                petal.className = 'petal';
+                petal.style.left = Math.random() * 100 + '%';
+                petal.style.animationDelay = Math.random() * 12 + 's';
+                petal.style.animationDuration = (Math.random() * 8 + 10) + 's';
+                petal.style.willChange = 'transform, opacity';
+                petalsContainer.appendChild(petal);
+            }
         }
 
-        // --- Music manager: try unmuted play on load, fallback to muted play; gesture to unmute ---
+        // Defer petal creation to idle time or shortly after load to avoid jank
+        if ('requestIdleCallback' in window) {
+            requestIdleCallback(createPetals, { timeout: 1000 });
+        } else {
+            // small timeout fallback
+            setTimeout(createPetals, 600);
+        }
+ 
+        // --- Music manager: safer startup to avoid mobile freeze ---
         const musicBtn = document.getElementById('musicBtn');
         const bgMusic = document.getElementById('bgMusic');
-
-        let isPlaying = false;
         let playAttempted = false;
 
-        function syncUI() {
-            const playing = !!bgMusic && !bgMusic.paused && !bgMusic.muted;
-            isPlaying = playing;
-            if (playing) {
+        function updateMusicButton(state) {
+            if (state) {
                 musicBtn.textContent = '🎶';
                 musicBtn.classList.add('playing');
             } else {
@@ -1102,88 +1129,82 @@
             }
         }
 
-        function savePref(enabled) {
-            localStorage.setItem('weddingSoundEnabled', enabled ? 'true' : 'false');
-        }
-
-        // Attempt to play with sound (unmuted). If blocked, start muted playback and wait for gesture.
-        function attemptUnmutedPlay() {
+        // Try unmuted play once after a short delay to let rendering settle.
+        function attemptUnmutedPlaySafe() {
             if (playAttempted || !bgMusic) return;
             playAttempted = true;
             bgMusic.loop = true;
             bgMusic.muted = false;
             bgMusic.volume = 0.4;
 
-            const p = bgMusic.play();
-            if (p && typeof p.then === 'function') {
-                p.then(() => {
-                    syncUI();
-                    savePref(true);
-                }).catch(() => {
-                    // Unmuted autoplay blocked -> fallback to muted play
-                    bgMusic.muted = true;
-                    bgMusic.play().catch(()=>{});
-                    syncUI();
-                    // attach gesture to unmute on first interaction
-                    const gesture = () => {
-                        bgMusic.muted = false;
-                        bgMusic.play().then(() => {
-                            syncUI();
-                            savePref(true);
-                        }).catch(()=>{});
-                        window.removeEventListener('click', gesture);
-                        window.removeEventListener('touchstart', gesture);
-                    };
-                    window.addEventListener('click', gesture, { once: true });
-                    window.addEventListener('touchstart', gesture, { once: true });
-                });
-            } else {
-                syncUI();
-                savePref(true);
-            }
+            // ensure browser has time to render before heavy work
+            setTimeout(() => {
+                const p = bgMusic.play();
+                if (p && typeof p.then === 'function') {
+                    p.then(() => {
+                        updateMusicButton(true);
+                        localStorage.setItem('weddingSoundEnabled', 'true');
+                    }).catch(() => {
+                        // blocked -> fallback to muted play (lightweight)
+                        bgMusic.muted = true;
+                        bgMusic.play().catch(()=>{});
+                        updateMusicButton(false);
+                        // attach a one-time gesture to unmute (user interaction)
+                        const gestureUnmute = () => {
+                            bgMusic.muted = false;
+                            bgMusic.play().then(() => {
+                                updateMusicButton(true);
+                                localStorage.setItem('weddingSoundEnabled', 'true');
+                            }).catch(()=>{});
+                            window.removeEventListener('click', gestureUnmute);
+                            window.removeEventListener('touchstart', gestureUnmute);
+                        };
+                        window.addEventListener('click', gestureUnmute, { once: true });
+                        window.addEventListener('touchstart', gestureUnmute, { once: true });
+                    });
+                } else {
+                    updateMusicButton(true);
+                    localStorage.setItem('weddingSoundEnabled', 'true');
+                }
+            }, 700); // small delay
         }
 
-        // Toggle from button
+        // Toggle button
         musicBtn.addEventListener('click', () => {
             if (!bgMusic) return;
             if (bgMusic.paused || bgMusic.muted) {
-                // enable sound
                 bgMusic.muted = false;
                 bgMusic.volume = 0.4;
                 bgMusic.play().then(() => {
-                    syncUI();
-                    savePref(true);
+                    updateMusicButton(true);
+                    localStorage.setItem('weddingSoundEnabled', 'true');
                 }).catch(() => {
-                    // if blocked, start muted and wait for gesture (browser may still block)
                     bgMusic.muted = true;
                     bgMusic.play().catch(()=>{});
-                    syncUI();
+                    updateMusicButton(false);
                 });
             } else {
-                // disable sound (pause)
                 bgMusic.pause();
                 bgMusic.muted = true;
-                syncUI();
-                savePref(false);
+                updateMusicButton(false);
+                localStorage.setItem('weddingSoundEnabled', 'false');
             }
         });
 
-        // On load try unmuted play; if blocked, muted fallback handled there
         window.addEventListener('DOMContentLoaded', () => {
-            // If user previously disabled sound, respect it and do not auto-unmute
+            // if user disabled previously, don't auto unmute
             const pref = localStorage.getItem('weddingSoundEnabled');
             if (pref === 'false') {
                 bgMusic.muted = true;
                 bgMusic.play().catch(()=>{});
-                syncUI();
-                return;
+                updateMusicButton(false);
+            } else {
+                attemptUnmutedPlaySafe();
             }
-            attemptUnmutedPlay();
         });
 
-        // When tab becomes visible try unmuted again (useful on mobile)
         document.addEventListener('visibilitychange', () => {
-            if (document.visibilityState === 'visible') attemptUnmutedPlay();
+            if (document.visibilityState === 'visible') attemptUnmutedPlaySafe();
         });
         // --- end music manager ---
 
